@@ -1,6 +1,6 @@
 # Automatic HTTPS via Let's Encrypt. Replace the domain + email.
 # Caddy owns host :80/:443 and proxies to the LibreChat api container.
 
-chat.getcito.com {
+assistant.getcito.com {
 	reverse_proxy api:3080
 }
