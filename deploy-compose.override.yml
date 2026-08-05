@@ -1,0 +1,25 @@
+# Adds Caddy (auto-HTTPS) in front of the api container.
+# Run WITH the base file:
+#   docker compose -f deploy-compose.yml -f deploy-compose.override.yml up -d
+#
+# NOTE: the base `client` (nginx) service binds host :80/:443 and will collide
+# with Caddy. Before starting, comment out the two `ports:` lines under the
+# `client:` service in deploy-compose.yml (Caddy replaces it for the domain).
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: LibreChat-Caddy
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:
