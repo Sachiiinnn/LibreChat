@@ -2,6 +2,40 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## Deployed-instance smoke test
+
+The deployed profile exercises an existing LibreChat deployment without starting another app or
+database. It uses the deployment's configured model provider and persists a real conversation, so
+run it only with a dedicated test account in an environment where that traffic is expected.
+
+First, create Playwright storage state by signing in through the deployment's normal login flow:
+
+```sh
+npx playwright codegen \
+  --save-storage=e2e/storageState.json \
+  https://librechat.example.com/c/new
+```
+
+Close codegen after sign-in, then run the smoke test:
+
+```sh
+E2E_BASE_URL=https://librechat.example.com \
+  npm run e2e:deployed
+```
+
+The storage-state file contains session credentials. The default path is ignored by Git; do not
+commit it or include it in test artifacts.
+
+Set `E2E_STORAGE_STATE` when the auth file is mounted elsewhere. If the account has no default
+model, set `E2E_DEPLOYED_MODEL` to the exact configured model label. `E2E_DEPLOYED_PROMPT` can
+replace the short default prompt, and `E2E_IGNORE_HTTPS_ERRORS=true` supports deployments using a
+self-signed certificate.
+
+The profile deliberately has no global setup, database access, or web server. It verifies the
+authenticated shell, sends one real prompt, reloads the resulting conversation, and deletes only
+the conversation created by that run through LibreChat's authenticated API. Keep deterministic
+provider behavior and destructive database fixtures in the mock profile instead.
+
 ## Stream Stores and Shards
 
 The mock profile uses the in-memory generation stream store by default. To exercise the same browser scenarios through a real Redis job store and pub/sub transport, start Redis on port 6379 and run:
@@ -12,11 +46,88 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-CI runs the complete mock suite in both stream modes. Each mode is split across four Playwright shards, while each shard keeps one worker so tests do not contend for the shard's authenticated user and database:
+Pull request CI runs the complete mock suite in memory mode across three shards, plus a
+focused Redis transport suite. The Redis suite covers streaming fidelity, steering,
+interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/4
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/3
+npm run e2e:mock:redis:transport
 ```
+
+The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
+modes across two shards per mode. Every shard keeps one worker so tests do not contend for its
+authenticated user and database.
+
+## Property-based browser testing
+
+Bombadil explores randomized sequences across the core chat loop, message branches,
+parallel multi-conversation responses, model changes, reloads, and sidebar conversation
+lifecycle operations:
+
+```sh
+npm run e2e:bombadil
+```
+
+Set `BOMBADIL_TIME_LIMIT` for longer local or scheduled runs. Failures leave a
+reproducible trace under `e2e/.generated/bombadil-output`; rerun it with:
+
+```sh
+BOMBADIL_REPRODUCE=e2e/.generated/bombadil-output npm run e2e:bombadil:run
+```
+
+Reproducing a real violation is expected to fail the Playwright test. Before a
+new run overwrites the active output, the harness archives it under
+`e2e/.generated/bombadil-history/`. Reproduction can diverge when streaming
+timing changes; Bombadil reports that explicitly.
+
+The harness uses the credential-free mock-LLM profile, so exploration never sends
+billable provider requests.
+
+CI runs the broad property exploration for five minutes in the non-blocking
+`Bombadil Property Exploration` workflow. If a property fails, download the
+`bombadil-reproduction-*` artifact into
+`e2e/.generated/bombadil-output/`, then reproduce it locally:
+
+```sh
+BOMBADIL_REPRODUCE=e2e/.generated/bombadil-output npm run e2e:bombadil:run
+```
+
+The accompanying `bombadil-diagnostics-*` artifact contains the captured CI log,
+Playwright HTML report, and Playwright test results. A Bombadil failure produces
+a workflow warning but does not block merge.
+
+The default instruments inline JavaScript only because instrumenting LibreChat's
+full Vite bundle can exceed Bombadil's driver timeout during stateful runs. Set
+`BOMBADIL_INSTRUMENT_JAVASCRIPT=files,inline` for shorter coverage-guided
+experiments.
+
+The branch reload, fork submission, model/conversation, HITL pause/resume, and
+mid-run steering lifecycle properties can be run independently:
+
+```sh
+npm run e2e:bombadil:branch-reload
+npm run e2e:bombadil:fork-lifecycle
+npm run e2e:bombadil:model-lifecycle
+npm run e2e:bombadil:hitl
+npm run e2e:bombadil:steering
+```
+
+These focused commands are diagnostic properties: they exit nonzero when they
+reproduce a product invariant violation. Reproduce a focused trace with its
+matching `:run` script and output directory, for example:
+
+```sh
+BOMBADIL_REPRODUCE=e2e/.generated/bombadil-output-hitl npm run e2e:bombadil:hitl:run
+```
+
+HITL drives a real `ask_user_question` checkpoint through the answer/resume
+controller, reloads while the question is paused, answers it once, and reloads
+the completed conversation. Steering submits an in-flight steer during a slow
+MCP-backed run, checks that it moves exactly once from the composer anchor into
+the response at the tool boundary, and reloads the applied state. The model
+lifecycle property is the passing control. The branch reload and fork
+properties preserve their minimal failing traces.
 
 ## Recording Tests
 

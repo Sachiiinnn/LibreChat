@@ -8,6 +8,9 @@ jest.mock('@librechat/api', () => ({
 }));
 jest.mock('librechat-data-provider', () => ({
   extractEnvVariable: jest.fn((value) => value),
+  /* Real selection logic: these tests are about which provider a schema resolves to. */
+  listConfiguredSpeechProviders:
+    jest.requireActual('librechat-data-provider').listConfiguredSpeechProviders,
   TTSProviders: {
     OPENAI: 'openai',
     AZURE_OPENAI: 'azureOpenAI',
@@ -23,7 +26,7 @@ jest.mock('./streamAudio', () => ({
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
 const { resolveConfigSecret } = require('@librechat/api');
-const { TTSService } = require('./TTSService');
+const { TTSService, getProvider } = require('./TTSService');
 
 describe('TTSService provider header construction with an undecryptable apiKey', () => {
   let service;
@@ -68,5 +71,37 @@ describe('TTSService provider header construction with an undecryptable apiKey',
       'voice1',
     );
     expect(headers).not.toHaveProperty('Authorization');
+  });
+});
+
+describe('TTSService getProvider detection', () => {
+  const buildConfig = (tts) => ({ speech: { tts } });
+
+  it('resolves exactly one provider when allowedAddresses is set alongside it', async () => {
+    const provider = await getProvider(
+      buildConfig({
+        allowedAddresses: ['localhost:11434'],
+        localai: { url: 'http://localhost:11434/tts', apiKey: 'sk' },
+      }),
+    );
+    expect(provider).toBe('localai');
+  });
+
+  it('reports "No provider is set" when only allowedAddresses is present', async () => {
+    await expect(
+      getProvider(buildConfig({ allowedAddresses: ['localhost:11434'] })),
+    ).rejects.toThrow('No provider is set');
+  });
+
+  it('reports "Multiple providers" when two providers are set even with allowedAddresses', async () => {
+    await expect(
+      getProvider(
+        buildConfig({
+          allowedAddresses: ['localhost:11434'],
+          openai: { url: 'http://localhost:11434', apiKey: 'sk' },
+          localai: { url: 'http://localhost:11434/tts', apiKey: 'sk' },
+        }),
+      ),
+    ).rejects.toThrow('Multiple providers are set');
   });
 });
